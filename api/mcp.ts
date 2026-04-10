@@ -38,8 +38,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       (Array.isArray(body) && body.some((m: any) => m.method === 'initialize'));
     const isNotification = body?.method?.startsWith('notifications/');
 
-    // Notifications don't need a response — just acknowledge
-    if (isNotification) {
+    // Notifications don't need a response — acknowledge immediately
+    if (isNotification && !isInit) {
       return res.status(202).end();
     }
 
@@ -53,10 +53,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await mcpServer.connect(transport);
 
     if (isInit) {
-      // Straight init — handle directly
       await transport.handleRequest(req as any, res as any, body);
     } else {
-      // Non-init: send as a JSON-RPC batch with init prepended
+      // Non-init: the transport validates mcp-session-id against its own
+      // session BEFORE processing the body. Since this is a fresh transport,
+      // no session exists yet. Fix: strip the header, send init+request as
+      // a batch, so the transport sees an init (no session required) and
+      // processes both messages.
+      delete (req.headers as any)['mcp-session-id'];
+
       const initMsg = {
         jsonrpc: '2.0',
         id: '_auto_' + Date.now(),
