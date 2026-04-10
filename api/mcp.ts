@@ -45,11 +45,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'DELETE') return res.status(200).json({ jsonrpc: '2.0', result: {} });
 
   if (req.method === 'GET') {
-    // SSE keepalive for mcp-remote
+    // mcp-remote wants an SSE stream. In serverless we can't hold connections
+    // open — Vercel functions timeout at 5min and pile up, blocking POST calls.
+    // Return a valid SSE response and close immediately.
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
     res.write(':ok\n\n');
+    res.end();
     return;
   }
 
