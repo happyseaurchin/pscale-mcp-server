@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@supabase/supabase-js": "^2.89.0"
+    "@supabase/supabase-js": "^2.89.0",
+    "@vercel/node": "^5.7.3"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

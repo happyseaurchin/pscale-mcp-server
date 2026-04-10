@@ -5,7 +5,6 @@ import { createServer } from './server.js';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 
-const mcpServer = createServer();
 const transports = new Map<string, StreamableHTTPServerTransport>();
 
 const httpServer = createHttpServer(async (req, res) => {
@@ -67,6 +66,7 @@ const httpServer = createHttpServer(async (req, res) => {
       }
     };
 
+    const mcpServer = createServer();
     await mcpServer.connect(transport);
     await transport.handleRequest(req, res, body);
 
