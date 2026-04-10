@@ -1,14 +1,17 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.SUPABASE_URL || 'https://piqxyfmzzywxzqkzmpmm.supabase.co';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseKey =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_ANON_KEY ||
+  '';
 
 let client: SupabaseClient | null = null;
 
 function getClient(): SupabaseClient {
   if (!client) {
     if (!supabaseKey) {
-      throw new Error('SUPABASE_SERVICE_ROLE_KEY is required');
+      throw new Error('SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY is required');
     }
     client = createClient(supabaseUrl, supabaseKey);
   }
