@@ -1,17 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createServer } from '../src/server.js';
 
 /**
  * Vercel serverless MCP endpoint.
  *
- * Stateless: each request gets a fresh server + transport.
- * enableJsonResponse: true → complete JSON response per request.
- *
- * Key: Vercel pre-parses req.body. The SDK's handleRequest needs the
- * parsed body passed explicitly as the third argument because the
- * request stream is already consumed by Vercel's middleware.
+ * Stateless mode: sessionIdGenerator returns undefined → no session tracking.
+ * Each request gets a fresh server + transport, initialized inline.
+ * The SDK handles this: when there's no session ID, it doesn't require
+ * prior initialization for tool calls.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS
@@ -42,19 +39,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const mcpServer = createServer();
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
+      // Stateless: no session tracking. Each request is self-contained.
+      sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
 
     await mcpServer.connect(transport);
-
-    // Cast req/res — VercelRequest extends IncomingMessage, VercelResponse extends ServerResponse.
-    // Pass req.body explicitly since Vercel has already consumed the stream.
-    await transport.handleRequest(
-      req as any,
-      res as any,
-      req.body,
-    );
+    await transport.handleRequest(req as any, res as any, req.body);
   } catch (err: any) {
     console.error('MCP handler error:', err?.stack || err?.message || err);
     if (!res.headersSent) {
