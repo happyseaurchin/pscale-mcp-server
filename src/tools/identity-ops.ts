@@ -1,70 +1,60 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.SUPABASE_URL || 'https://piqxyfmzzywxzqkzmpmm.supabase.co';
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
-
-function getClient() {
-  if (!supabaseKey) throw new Error('SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY is required');
-  return createClient(supabaseUrl, supabaseKey);
-}
+import { bsp, type Block } from '../bsp.js';
+import { getClient, upsertBlock } from '../db.js';
 
 export function registerIdentityOps(server: McpServer) {
   // ── pscale_passport_publish ──
 
   server.tool(
     'pscale_passport_publish',
-    `Publish your identity as a passport — a public declaration of who you are, what you can do, and what you're looking for. Other agents can read your passport to assess whether to engage with you. Include your purpose coordinates (pscale addresses describing your expertise and needs).`,
+    `Publish your identity as a passport — a pscale block declaring who you are, what you can do, and what you're looking for. Other agents read your passport to assess whether to engage. The passport IS a block: underscore carries your description, digit 1 holds what you offer, digit 2 holds what you need. Navigate it with BSP like any other block.`,
     {
       owner_id: z.string().describe('Your agent identifier'),
-      name: z.string().describe('Display name'),
       description: z
         .string()
-        .optional()
-        .describe('Brief description of what you do'),
+        .describe('Who you are and what you do — becomes the block underscore'),
       offers: z
-        .array(z.string())
+        .string()
         .optional()
-        .describe(
-          "Pscale coordinates for what you can provide (e.g. ['0.25', '0.253'])",
-        ),
+        .describe('What you can provide — becomes digit 1'),
       needs: z
-        .array(z.string())
+        .string()
         .optional()
-        .describe('Pscale coordinates for what you\'re looking for'),
+        .describe('What you\'re looking for — becomes digit 2'),
     },
-    async ({ owner_id, name, description, offers, needs }) => {
-      const passport = {
-        _: description || name,
-        name,
-        ...(offers && offers.length > 0 ? { offers } : {}),
-        ...(needs && needs.length > 0 ? { needs } : {}),
-        published_at: new Date().toISOString(),
-      };
+    async ({ owner_id, description, offers, needs }) => {
+      // The passport is a pscale block. Structure encodes meaning.
+      // _  = who you are
+      // 1  = what you offer
+      // 2  = what you need
+      // Deeper structure can be added by the agent via pscale_write.
+      const block: Block = { _: description };
+      if (offers) block['1'] = offers;
+      if (needs) block['2'] = needs;
 
+      // Save as a block (navigable by BSP)
+      await upsertBlock(owner_id, 'passport', 'general', block);
+
+      // Also publish to sand_passports for cross-agent discovery
       const client = getClient();
-      const { data, error } = await client
+      await client
         .from('sand_passports')
         .upsert(
           {
             id: owner_id,
-            passport,
+            passport: block,
             updated_at: new Date().toISOString(),
           },
           { onConflict: 'id' },
-        )
-        .select()
-        .single();
-
-      if (error) throw new Error(`DB error: ${error.message}`);
+        );
 
       return {
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify(
-              { published: true, agent_id: owner_id, passport },
+              { published: true, agent_id: owner_id, passport: block },
               null,
               2,
             ),
@@ -78,7 +68,7 @@ export function registerIdentityOps(server: McpServer) {
 
   server.tool(
     'pscale_passport_read',
-    `Read another agent's passport to learn about their identity, capabilities, and current needs. Returns their published identity block.`,
+    `Read another agent's passport. Returns a pscale block — walk it with BSP to understand their identity at any depth. Underscore = who they are. Digit 1 = what they offer. Digit 2 = what they need.`,
     {
       agent_id: z.string().describe('The agent ID to look up'),
     },
@@ -95,18 +85,22 @@ export function registerIdentityOps(server: McpServer) {
           content: [
             {
               type: 'text' as const,
-              text: `No passport found for agent "${agent_id}". They may not have published one yet.`,
+              text: `No passport found for agent "${agent_id}".`,
             },
           ],
         };
       }
       if (error) throw new Error(`DB error: ${error.message}`);
 
+      // Return the passport block — the agent can walk it with BSP
+      const passport = data.passport;
+      const spindle = bsp(passport);
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(data, null, 2),
+            text: JSON.stringify({ agent_id, passport, tree: spindle }, null, 2),
           },
         ],
       };

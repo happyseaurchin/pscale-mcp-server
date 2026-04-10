@@ -29,7 +29,7 @@ The phrase from an earlier instance: "The JSON is not storing instructions for a
 
 ## What this is
 
-An MCP server that gives any LLM agent structured memory and cooperative discovery via pscale blocks. 13 tools + 1 resource. Streamable HTTP transport. Supabase storage.
+An MCP server that gives any LLM agent structured memory and cooperative discovery via pscale blocks. 12 tools + 1 resource. Streamable HTTP transport. Supabase storage.
 
 **Repo**: https://github.com/happyseaurchin/pscale-mcp-server
 
@@ -43,7 +43,7 @@ src/
   index.ts            — Standalone Node.js HTTP entry
   starstone.json      — Lean starstone block (MCP resource)
   tools/
-    block-ops.ts      — create_block, read, write, walk
+    block-ops.ts      — create_block, write, walk (walk is the only nav tool)
     memory-ops.ts     — remember, recall, concern
     identity-ops.ts   — passport_publish, passport_read
     discovery-ops.ts  — beach_mark, beach_read, inbox_send, inbox_check
@@ -97,7 +97,7 @@ Server starts on `http://localhost:3000/mcp`.
 2. **Do not add fields to blocks.** Position in the tree encodes what you think you need a field for.
 3. **Do not add logic to handle block semantics.** Tool handlers are thin wrappers around BSP calls. If a handler is getting complex, the block structure is wrong, not the code.
 4. **Do not build systems.** No reverse indices, no caching layers, no routing tables. The tree walks. That's the system.
-5. **Do not grow the server.** 13 tools is already a lot. Before adding a 14th, ask whether an existing tool with a different block structure solves the problem.
+5. **Do not grow the server.** 12 tools is the right number. Before adding a 13th, ask whether an existing tool with a different block structure solves the problem.
 
 ## The starstone
 
@@ -118,10 +118,13 @@ Server starts on `http://localhost:3000/mcp`.
 
 ## What was built in the first session (10 April 2026)
 
-Phase 1 (block ops + memory ops) and Phase 2 (identity + discovery SAND) were built and tested end-to-end in a single session. All 13 tools verified via curl against live Supabase. Database migrations applied. The spec is at `/Users/davidpinto/Downloads/pscale-mcp-server-spec.md`.
+Built and tested end-to-end in a single session. All tools verified via curl against live Supabase. Database migrations applied. The spec is at `/Users/davidpinto/Downloads/pscale-mcp-server-spec.md`.
+
+Review pass completed same session. Removed `pscale_read` (was redundant with `pscale_walk`). Rewrote passport to be a proper pscale block instead of flat JSON with arrays. Consolidated Supabase client to single shared instance. Removed `block_type` enum from `create_block` (blocks don't need type labels — structure IS type).
 
 Outstanding:
 - Vercel deployment not yet configured (project not created on Vercel yet)
 - `pscale_recall` level-based navigation needs refinement — disc at depth 0 returns root, individual memories are at depth 1. The mapping from "level" (user-facing) to "depth" (BSP) needs thought. This might be a case where the block structure should be adjusted rather than adding code.
-- Compaction in `pscale_remember` is basic (concatenation). Production would use LLM summarisation, but the structure (9 siblings compact to parent underscore) is correct.
+- Compaction in `pscale_remember` is basic (concatenation). Production would use LLM summarisation, but the structure (9 siblings compact to parent underscore) is correct. The remember handler is still ~50 lines of tree-walking code (`findNextSlot`, `compactLevel`, `compactIfFull`). The operations are structurally correct but could potentially compose from BSP primitives rather than hand-walking.
 - The `content` parameter in `pscale_inbox_send` was changed from `z.record(z.any())` to `z.string()` because zod record schemas crash `tools/list` serialisation. The handler JSON-parses the string if possible. This is a workaround, not a design choice.
+- The `block_type` column still exists in the DB and is set to `'general'` by default. It's not exposed to agents anymore but remains as a DB-level filter for potential future use. If it never gets used, it should be dropped.

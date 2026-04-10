@@ -8,7 +8,7 @@ const supabaseKey =
 
 let client: SupabaseClient | null = null;
 
-function getClient(): SupabaseClient {
+export function getClient(): SupabaseClient {
   if (!client) {
     if (!supabaseKey) {
       throw new Error('SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY is required');
