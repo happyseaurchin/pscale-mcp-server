@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { bsp, writeAt, type Block } from '../bsp.js';
+import { bsp, writeAt, fmtResult, fmtDir, type Block, type BspResult } from '../bsp.js';
 import { getBlock, upsertBlock, listBlocks } from '../db.js';
 
 export function registerBlockOps(server: McpServer) {
@@ -80,11 +80,13 @@ export function registerBlockOps(server: McpServer) {
 
       await upsertBlock(owner_id, name, row.block_type, block);
 
+      // Confirm with a spindle to the written address so the agent sees context
+      const confirmation = bsp(block, address);
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ written: true, address, block }, null, 2),
+            text: `Written to ${name} at ${address}.\n${fmtResult(confirmation)}`,
           },
         ],
       };
@@ -166,9 +168,14 @@ Start with 'dir' to see the whole block, then 'spindle' to drill into an address
         }
       }
 
+      // Return readable text, not raw JSON
+      const label = address
+        ? `[${name} ${address} ${mode}]`
+        : `[${name} ${mode}]`;
+
       return {
         content: [
-          { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+          { type: 'text' as const, text: `${label}\n${fmtResult(result!)}` },
         ],
       };
     },

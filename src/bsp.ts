@@ -1,14 +1,14 @@
 /**
- * bsp-star.ts — pure-form BSP for pscale JSON blocks.
+ * bsp.ts — pure-form BSP for pscale JSON blocks.
  *
- * Faithful TypeScript port of bsp-star.py (CORSAIR reference implementation).
+ * TypeScript port of bsp2-star.py (CORSAIR reference implementation).
  *
  * No tree wrapper, no tuning field, no metadata. The block IS the tree.
  * Floor derived from the underscore chain. Digit 0 maps to key '_'.
  *
  * Modes:
- *   bsp(block)                          → dir: full tree
- *   bsp(block, number)                  → spindle: root-to-target chain with pscale
+ *   bsp(block)                          → dir: full tree (depth-1 survey)
+ *   bsp(block, number)                  → spindle: root-to-target chain
  *   bsp(block, number, 'ring')          → ring: siblings at terminal
  *   bsp(block, number, 'dir')           → dir: subtree from target down
  *   bsp(block, number, pscale, 'point') → point: single node at pscale
@@ -101,21 +101,19 @@ export function floorDepth(block: Block): number {
 // ── Address parsing ──
 
 /**
- * Parse a pscale number into a list of digit characters to walk.
+ * Parse a pscale number into a list of digit characters.
  * The decimal point is a readability marker for the floor boundary, not structural.
- * Strip it and walk all digits.
+ * Strip it. Preserve digits — the caller handles floor padding and right-stripping.
  */
 export function parseAddress(number: number | string): string[] {
-  let s: string;
   if (typeof number === 'number') {
-    s = number.toFixed(10);
-  } else {
-    s = String(number);
+    const s = number.toFixed(10);
+    const parts = s.split('.');
+    const intPart = parts[0];
+    const fracPart = parts.length > 1 ? parts[1].replace(/0+$/, '') : '';
+    return [...(fracPart ? intPart + fracPart : intPart)];
   }
-  // Remove decimal point — it's notation, not structure
-  s = s.replace('.', '');
-  // Strip trailing zeros from float formatting
-  s = s.replace(/0+$/, '') || '0';
+  const s = String(number).replace('.', '');
   return [...s];
 }
 
@@ -206,10 +204,7 @@ export type BspResult =
 /**
  * Pure-form BSP. Block is the tree — no wrapper.
  *
- * @param block - The pscale JSON block
- * @param number - Pscale address (number or string). null for dir/disc.
- * @param point - 'ring' | 'dir' | '*' | pscale number for point mode | depth for disc mode
- * @param mode - 'point' | 'disc' (when point param carries pscale/depth value)
+ * Address parsing follows bsp2-star.py: parse → floor-aware left-pad → right-strip → walk.
  */
 export function bsp(
   block: Block,
@@ -257,8 +252,17 @@ export function bsp(
     return { mode: 'disc', depth: target, nodes };
   }
 
-  // Parse address and walk
-  const digits = parseAddress(number!);
+  // Parse address, then: check floor → pad left → strip right → walk.
+  let digits = parseAddress(number!);
+  // 1. Pad left to floor width (add underscore-chain zeros the human omitted)
+  if (fl > 1 && digits.length < fl) {
+    digits = Array(fl - digits.length).fill('0').concat(digits);
+  }
+  // 2. Strip trailing zeros (human padding for floor-width notation)
+  while (digits.length > 1 && digits[digits.length - 1] === '0') {
+    digits.pop();
+  }
+  // 3. Walk
   const { chain, terminal, parent, lastKey } = walk(block, digits);
 
   const pscaleAt = (depth: number) => (fl - 1) - depth;
@@ -319,6 +323,87 @@ export function bsp(
     text: entry.text,
   }));
   return { mode: 'spindle', nodes };
+}
+
+// ── Formatters (ported from bsp2-star.py CLI) ──
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + '...' : s;
+}
+
+/** Format a spindle result as readable text. */
+export function fmtSpindle(r: { nodes: SpindleNode[] }): string {
+  return r.nodes
+    .map(n => `  [${String(n.pscale).padStart(3)}] ${truncate(n.text, 200)}`)
+    .join('\n');
+}
+
+/** Format a ring result as readable text. */
+export function fmtRing(r: { siblings: RingSibling[] }): string {
+  if (!r.siblings.length) return '  (no siblings)';
+  return r.siblings
+    .map(s => `  ${s.digit}: ${truncate(s.text || '(branch)', 120)}${s.branch ? ' +' : ''}`)
+    .join('\n');
+}
+
+/** Format a disc result as readable text. */
+export function fmtDisc(r: { nodes: DiscNode[] }): string {
+  if (!r.nodes.length) return '  (no nodes at this depth)';
+  return r.nodes
+    .map(n => `  [${n.path}] ${truncate(n.text || '(no text)', 150)}`)
+    .join('\n');
+}
+
+/** Format a dir result as readable text. */
+export function fmtDir(r: { tree?: Block; subtree?: any }): string {
+  const tree = r.subtree || r.tree || {};
+  if (r.subtree) return JSON.stringify(tree, null, 2);
+  const lines: string[] = [];
+  const root = tree._ ?? '';
+  if (typeof root === 'string' && root) {
+    lines.push(`  _: ${truncate(root, 200)}`);
+  } else if (root && typeof root === 'object') {
+    const text = collectUnderscore(tree);
+    lines.push(`  _: ${truncate(text || '(floor chain)', 200)}`);
+  }
+  for (const k of Object.keys(tree).filter(k => k !== '_').sort()) {
+    const v = tree[k];
+    const text = typeof v === 'string'
+      ? v
+      : (typeof v === 'object' && v !== null ? (collectUnderscore(v) || '(branch)') : String(v));
+    lines.push(`  ${k}: ${truncate(text, 120)}`);
+  }
+  return lines.join('\n');
+}
+
+/** Format a star result as readable text. */
+export function fmtStar(r: { address: string; semantic: string | null; hidden: Record<string, any> | null }): string {
+  const lines: string[] = [];
+  if (r.semantic) lines.push(`  semantic: ${truncate(r.semantic, 150)}`);
+  if (r.hidden) {
+    for (const k of Object.keys(r.hidden).sort()) {
+      const v = r.hidden[k];
+      const text = typeof v === 'string'
+        ? v
+        : (typeof v === 'object' && v !== null ? (collectUnderscore(v) || '(block)') : String(v));
+      lines.push(`  ${k}: ${truncate(text, 150)}`);
+    }
+  } else {
+    lines.push('  (no hidden directory)');
+  }
+  return lines.join('\n');
+}
+
+/** Format any BSP result as readable text. */
+export function fmtResult(result: BspResult): string {
+  switch (result.mode) {
+    case 'spindle': return fmtSpindle(result);
+    case 'ring': return fmtRing(result);
+    case 'disc': return fmtDisc(result);
+    case 'dir': return fmtDir(result);
+    case 'star': return fmtStar(result);
+    case 'point': return `  [pscale ${result.pscale}] ${result.text ?? '(no text)'}`;
+  }
 }
 
 // ── Write ──

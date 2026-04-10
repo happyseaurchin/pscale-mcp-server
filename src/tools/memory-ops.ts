@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { bsp, writeAt, floorDepth, collectUnderscore, type Block } from '../bsp.js';
+import { bsp, writeAt, floorDepth, collectUnderscore, fmtResult, fmtDisc, type Block } from '../bsp.js';
 import { getBlock, upsertBlock } from '../db.js';
 
 /**
@@ -227,38 +227,35 @@ export function registerMemoryOps(server: McpServer) {
           }
         }
         searchNode(block, '');
+        const lines = matches.slice(0, 20).map(m => `  [${m.address}] ${m.text}`);
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ search, matches: matches.slice(0, 20) }, null, 2),
+              text: `Search "${search}" — ${matches.length} matches:\n${lines.join('\n')}`,
             },
           ],
         };
       }
 
-      // Level/position mode: use disc to get all items at the requested depth
+      // Position mode: specific item at this level
       if (position) {
-        // Specific item at this level
-        const address = String(position);
-        const result = bsp(block, address);
+        const result = bsp(block, String(position));
         return {
           content: [
-            { type: 'text' as const, text: JSON.stringify(result, null, 2) },
+            { type: 'text' as const, text: `[history ${position}]\n${fmtResult(result)}` },
           ],
         };
       }
 
       // All items at this level — use disc
-      const fl = floorDepth(block);
-      const depth = fl + level; // level 0 = floor depth, level 1 = floor+1, etc.
       const result = bsp(block, null, level, 'disc');
 
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ level, ...result }, null, 2),
+            text: `[history disc @ depth ${level}]\n${fmtResult(result)}`,
           },
         ],
       };
@@ -301,11 +298,12 @@ export function registerMemoryOps(server: McpServer) {
             ],
           };
         }
+        const dir = bsp(row.block as Block);
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify(row.block, null, 2),
+              text: `[concern]\n${fmtResult(dir)}`,
             },
           ],
         };
@@ -330,11 +328,12 @@ export function registerMemoryOps(server: McpServer) {
 
       await upsertBlock(owner_id, 'concern', 'concern', block);
 
+      const dir = bsp(block);
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ set: true, concern: block }, null, 2),
+            text: `Concern set.\n${fmtResult(dir)}`,
           },
         ],
       };
