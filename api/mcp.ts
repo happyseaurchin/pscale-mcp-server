@@ -32,6 +32,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method !== 'POST') return res.status(405).end();
 
+  // DIAGNOSTIC: prove our handler runs
+  if (req.headers['x-debug'] === 'ping') {
+    return res.status(200).json({ handler: 'reached', sessionHeader: req.headers['mcp-session-id'] });
+  }
+
   try {
     // ALWAYS strip session header — this is a stateless endpoint
     delete (req as any).headers['mcp-session-id'];
