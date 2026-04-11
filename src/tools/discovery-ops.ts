@@ -8,72 +8,220 @@ function hashUrl(url: string): string {
   return createHash('sha256').update(url.trim().toLowerCase()).digest('hex').slice(0, 16);
 }
 
-export function registerDiscoveryOps(server: McpServer) {
-  // ── pscale_beach_mark ──
+// ── Exported handler functions (used by kernel + legacy registration) ──
 
+export async function handleBeachMark(
+  { owner_id, url, purpose_coordinate }: {
+    owner_id: string; url: string; purpose_coordinate: string;
+  },
+) {
+  const url_hash = hashUrl(url);
+  const client = getClient();
+
+  const { data, error } = await client
+    .from('beach_marks')
+    .insert({
+      url_hash,
+      agent_id: owner_id,
+      passport_url: null,
+      purpose: purpose_coordinate,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if (error.message?.includes('duplicate') || error.code === '23505') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Already marked this URL recently. Beach marks have a rate limit.`,
+          },
+        ],
+      };
+    }
+    throw new Error(`DB error: ${error.message}`);
+  }
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(
+          {
+            marked: true,
+            url_hash,
+            purpose: purpose_coordinate,
+            agent_id: owner_id,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+export async function handleBeachRead(
+  { url, limit }: { url: string; limit?: number },
+) {
+  const url_hash = hashUrl(url);
+  const client = getClient();
+  const effectiveLimit = limit ?? 20;
+
+  const { data, error } = await client
+    .from('beach_marks')
+    .select('*')
+    .eq('url_hash', url_hash)
+    .order('created_at', { ascending: false })
+    .limit(effectiveLimit);
+
+  if (error) throw new Error(`DB error: ${error.message}`);
+
+  const marks = (data || []).map((m: any) => ({
+    agent_id: m.agent_id,
+    purpose: m.purpose,
+    passport_url: m.passport_url,
+    timestamp: m.created_at,
+  }));
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(
+          { url_hash, mark_count: marks.length, marks },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+export async function handleInboxSend(
+  { from_agent, to_agent, message_type, spindle, content, responding_to }: {
+    from_agent: string; to_agent: string; message_type: string;
+    spindle?: string; content?: string; responding_to?: string;
+  },
+) {
+  const client = getClient();
+
+  // Try to parse content as JSON, fall back to string
+  let parsedContent: any = content;
+  if (content) {
+    try { parsedContent = JSON.parse(content); } catch { /* keep as string */ }
+  }
+
+  const message = {
+    type: message_type,
+    ...(spindle ? { spindle } : {}),
+    ...(parsedContent ? { content: parsedContent } : {}),
+    ...(responding_to ? { responding_to } : {}),
+    sent_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await client
+    .from('sand_inbox')
+    .insert({
+      to_agent,
+      from_agent,
+      message,
+      read: false,
+    })
+    .select()
+    .single();
+
+  if (error) throw new Error(`DB error: ${error.message}`);
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(
+          {
+            sent: true,
+            to: to_agent,
+            from: from_agent,
+            type: message_type,
+            id: data.id,
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+export async function handleInboxCheck(
+  { owner_id, unread_only }: { owner_id: string; unread_only?: boolean },
+) {
+  const client = getClient();
+  const effectiveUnreadOnly = unread_only ?? true;
+
+  let query = client
+    .from('sand_inbox')
+    .select('*')
+    .eq('to_agent', owner_id)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (effectiveUnreadOnly) {
+    query = query.eq('read', false);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(`DB error: ${error.message}`);
+
+  const messages = (data || []).map((m: any) => ({
+    id: m.id,
+    from: m.from_agent,
+    message: m.message,
+    read: m.read,
+    received_at: m.created_at,
+  }));
+
+  // Mark as read
+  if (effectiveUnreadOnly && messages.length > 0) {
+    const ids = messages.map((m: any) => m.id);
+    await client
+      .from('sand_inbox')
+      .update({ read: true })
+      .in('id', ids);
+  }
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(
+          { inbox_count: messages.length, messages },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+// ── Legacy registration (kept for backward compat) ──
+
+export function registerDiscoveryOps(server: McpServer) {
   server.tool(
     'pscale_beach_mark',
     `Leave a trace at a URL — declaring that you visited and why. Other agents visiting the same URL can find your mark and follow it back to your passport. This is cooperative visibility — you're helping other agents find you.`,
     {
       owner_id: z.string().describe('Your agent identifier'),
-      url: z.string().describe('The URL you\'re marking (will be hashed)'),
+      url: z.string().describe("The URL you're marking (will be hashed)"),
       purpose_coordinate: z
         .string()
         .describe(
           "A pscale coordinate for why you're at this URL (e.g. '0.34' for trust evaluation)",
         ),
     },
-    async ({ owner_id, url, purpose_coordinate }) => {
-      const url_hash = hashUrl(url);
-      const client = getClient();
-
-      const { data, error } = await client
-        .from('beach_marks')
-        .insert({
-          url_hash,
-          agent_id: owner_id,
-          passport_url: null, // will be set when passport URLs are implemented
-          purpose: purpose_coordinate,
-        })
-        .select()
-        .single();
-
-      if (error) {
-        // Rate limit check: beach_marks has a 10-min rate limit per agent per URL
-        if (error.message?.includes('duplicate') || error.code === '23505') {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `Already marked this URL recently. Beach marks have a rate limit.`,
-              },
-            ],
-          };
-        }
-        throw new Error(`DB error: ${error.message}`);
-      }
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(
-              {
-                marked: true,
-                url_hash,
-                purpose: purpose_coordinate,
-                agent_id: owner_id,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
+    handleBeachMark,
   );
-
-  // ── pscale_beach_read ──
 
   server.tool(
     'pscale_beach_read',
@@ -86,42 +234,8 @@ export function registerDiscoveryOps(server: McpServer) {
         .default(20)
         .describe('Max marks to return (default 20)'),
     },
-    async ({ url, limit }) => {
-      const url_hash = hashUrl(url);
-      const client = getClient();
-
-      const { data, error } = await client
-        .from('beach_marks')
-        .select('*')
-        .eq('url_hash', url_hash)
-        .order('created_at', { ascending: false })
-        .limit(limit);
-
-      if (error) throw new Error(`DB error: ${error.message}`);
-
-      const marks = (data || []).map((m: any) => ({
-        agent_id: m.agent_id,
-        purpose: m.purpose,
-        passport_url: m.passport_url,
-        timestamp: m.created_at,
-      }));
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(
-              { url_hash, mark_count: marks.length, marks },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
+    handleBeachRead,
   );
-
-  // ── pscale_inbox_send ──
 
   server.tool(
     'pscale_inbox_send',
@@ -149,58 +263,8 @@ export function registerDiscoveryOps(server: McpServer) {
           "If responding to a probe: the address you're responding to",
         ),
     },
-    async ({ from_agent, to_agent, message_type, spindle, content, responding_to }) => {
-      const client = getClient();
-
-      // Try to parse content as JSON, fall back to string
-      let parsedContent: any = content;
-      if (content) {
-        try { parsedContent = JSON.parse(content); } catch { /* keep as string */ }
-      }
-
-      const message = {
-        type: message_type,
-        ...(spindle ? { spindle } : {}),
-        ...(parsedContent ? { content: parsedContent } : {}),
-        ...(responding_to ? { responding_to } : {}),
-        sent_at: new Date().toISOString(),
-      };
-
-      const { data, error } = await client
-        .from('sand_inbox')
-        .insert({
-          to_agent,
-          from_agent,
-          message,
-          read: false,
-        })
-        .select()
-        .single();
-
-      if (error) throw new Error(`DB error: ${error.message}`);
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(
-              {
-                sent: true,
-                to: to_agent,
-                from: from_agent,
-                type: message_type,
-                id: data.id,
-              },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
+    handleInboxSend,
   );
-
-  // ── pscale_inbox_check ──
 
   server.tool(
     'pscale_inbox_check',
@@ -212,52 +276,6 @@ export function registerDiscoveryOps(server: McpServer) {
         .default(true)
         .describe('Only return unread messages (default: true)'),
     },
-    async ({ owner_id, unread_only }) => {
-      const client = getClient();
-
-      let query = client
-        .from('sand_inbox')
-        .select('*')
-        .eq('to_agent', owner_id)
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      if (unread_only) {
-        query = query.eq('read', false);
-      }
-
-      const { data, error } = await query;
-      if (error) throw new Error(`DB error: ${error.message}`);
-
-      const messages = (data || []).map((m: any) => ({
-        id: m.id,
-        from: m.from_agent,
-        message: m.message,
-        read: m.read,
-        received_at: m.created_at,
-      }));
-
-      // Mark as read
-      if (unread_only && messages.length > 0) {
-        const ids = messages.map((m: any) => m.id);
-        await client
-          .from('sand_inbox')
-          .update({ read: true })
-          .in('id', ids);
-      }
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(
-              { inbox_count: messages.length, messages },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
+    handleInboxCheck,
   );
 }

@@ -3,9 +3,137 @@ import { z } from 'zod';
 import { bsp, writeAt, fmtResult, fmtDir, type Block, type BspResult } from '../bsp.js';
 import { getBlock, upsertBlock, listBlocks } from '../db.js';
 
-export function registerBlockOps(server: McpServer) {
-  // ── pscale_create_block ──
+// ── Exported handler functions (used by kernel + legacy registration) ──
 
+export async function handleCreateBlock(
+  { owner_id, name, initial_content, block_type }: {
+    owner_id: string; name: string; initial_content?: string; block_type?: string;
+  },
+) {
+  const existing = await getBlock(owner_id, name);
+  if (existing) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Block "${name}" already exists for ${owner_id}. Use pscale_write to modify it, or pscale_walk to navigate it.`,
+        },
+      ],
+    };
+  }
+
+  const block: Block = { _: initial_content || '' };
+  await upsertBlock(owner_id, name, block_type || 'general', block);
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({ created: true, name, block }, null, 2),
+      },
+    ],
+  };
+}
+
+export async function handleWrite(
+  { owner_id, name, address, content }: {
+    owner_id: string; name: string; address: string; content: string;
+  },
+) {
+  const row = await getBlock(owner_id, name);
+  if (!row) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Block "${name}" not found. Create it first with pscale_create_block.`,
+        },
+      ],
+    };
+  }
+
+  const block = row.block as Block;
+  const writeAddress = address === '0' ? '_' : address;
+  writeAt(block, writeAddress, content);
+
+  await upsertBlock(owner_id, name, row.block_type, block);
+
+  // Confirm with a spindle to the written address so the agent sees context
+  const confirmation = bsp(block, address);
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `Written to ${name} at ${address}.\n${fmtResult(confirmation)}`,
+      },
+    ],
+  };
+}
+
+export async function handleWalk(
+  { owner_id, name, address, mode }: {
+    owner_id: string; name: string; address?: string; mode?: string;
+  },
+) {
+  const row = await getBlock(owner_id, name);
+  if (!row) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Block "${name}" not found for ${owner_id}.`,
+        },
+      ],
+    };
+  }
+
+  const block = row.block as Block;
+  const effectiveMode = mode || 'dir';
+  let result;
+
+  if (!address && effectiveMode === 'dir') {
+    result = bsp(block);
+  } else if (!address && effectiveMode === 'disc') {
+    result = bsp(block, null, 1, 'disc');
+  } else if (!address) {
+    result = bsp(block);
+  } else {
+    switch (effectiveMode) {
+      case 'spindle':
+        result = bsp(block, address);
+        break;
+      case 'ring':
+        result = bsp(block, address, 'ring');
+        break;
+      case 'dir':
+        result = bsp(block, address, 'dir');
+        break;
+      case 'point':
+        result = bsp(block, address, 0, 'point');
+        break;
+      case 'disc':
+        result = bsp(block, null, parseInt(address, 10), 'disc');
+        break;
+      case 'star':
+        result = bsp(block, address, '*');
+        break;
+    }
+  }
+
+  const label = address
+    ? `[${name} ${address} ${effectiveMode}]`
+    : `[${name} ${effectiveMode}]`;
+
+  return {
+    content: [
+      { type: 'text' as const, text: `${label}\n${fmtResult(result!)}` },
+    ],
+  };
+}
+
+// ── Legacy registration (kept for backward compat) ──
+
+export function registerBlockOps(server: McpServer) {
   server.tool(
     'pscale_create_block',
     `Create a new pscale block — a structured JSON tree that compacts gracefully over time. The block starts with an underscore (the summary/spine) and numbered entries branch from it. Use for project context, research, or any information you want to navigate later.`,
@@ -19,34 +147,8 @@ export function registerBlockOps(server: McpServer) {
           'What this block is about. Becomes the underscore — the root summary that all deeper content branches from.',
         ),
     },
-    async ({ owner_id, name, initial_content }) => {
-      const existing = await getBlock(owner_id, name);
-      if (existing) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Block "${name}" already exists for ${owner_id}. Use pscale_write to modify it, or pscale_walk to navigate it.`,
-            },
-          ],
-        };
-      }
-
-      const block: Block = { _: initial_content || '' };
-      await upsertBlock(owner_id, name, 'general', block);
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({ created: true, name, block }, null, 2),
-          },
-        ],
-      };
-    },
+    handleCreateBlock,
   );
-
-  // ── pscale_write ──
 
   server.tool(
     'pscale_write',
@@ -61,39 +163,8 @@ export function registerBlockOps(server: McpServer) {
         ),
       content: z.string().describe('Text content to write at this address.'),
     },
-    async ({ owner_id, name, address, content }) => {
-      const row = await getBlock(owner_id, name);
-      if (!row) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Block "${name}" not found. Create it first with pscale_create_block.`,
-            },
-          ],
-        };
-      }
-
-      const block = row.block as Block;
-      const writeAddress = address === '0' ? '_' : address;
-      writeAt(block, writeAddress, content);
-
-      await upsertBlock(owner_id, name, row.block_type, block);
-
-      // Confirm with a spindle to the written address so the agent sees context
-      const confirmation = bsp(block, address);
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: `Written to ${name} at ${address}.\n${fmtResult(confirmation)}`,
-          },
-        ],
-      };
-    },
+    handleWrite,
   );
-
-  // ── pscale_walk ──
 
   server.tool(
     'pscale_walk',
@@ -119,65 +190,6 @@ Start with 'dir' to see the whole block, then 'spindle' to drill into an address
         .default('dir')
         .describe('Navigation mode. Default: dir (full tree).'),
     },
-    async ({ owner_id, name, address, mode }) => {
-      const row = await getBlock(owner_id, name);
-      if (!row) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Block "${name}" not found for ${owner_id}.`,
-            },
-          ],
-        };
-      }
-
-      const block = row.block as Block;
-      let result;
-
-      if (!address && mode === 'dir') {
-        // No address + dir = full tree
-        result = bsp(block);
-      } else if (!address && mode === 'disc') {
-        // Disc needs a depth, not an address — but we need it from somewhere
-        // Default to depth 1 (the first level of content)
-        result = bsp(block, null, 1, 'disc');
-      } else if (!address) {
-        // No address with spindle/ring/point/star doesn't make sense — return dir
-        result = bsp(block);
-      } else {
-        switch (mode) {
-          case 'spindle':
-            result = bsp(block, address);
-            break;
-          case 'ring':
-            result = bsp(block, address, 'ring');
-            break;
-          case 'dir':
-            result = bsp(block, address, 'dir');
-            break;
-          case 'point':
-            result = bsp(block, address, 0, 'point');
-            break;
-          case 'disc':
-            result = bsp(block, null, parseInt(address, 10), 'disc');
-            break;
-          case 'star':
-            result = bsp(block, address, '*');
-            break;
-        }
-      }
-
-      // Return readable text, not raw JSON
-      const label = address
-        ? `[${name} ${address} ${mode}]`
-        : `[${name} ${mode}]`;
-
-      return {
-        content: [
-          { type: 'text' as const, text: `${label}\n${fmtResult(result!)}` },
-        ],
-      };
-    },
+    handleWalk,
   );
 }

@@ -88,9 +88,194 @@ function compactIfFull(block: Block, path: string[]): void {
   }
 }
 
-export function registerMemoryOps(server: McpServer) {
-  // ── pscale_remember ──
+// ── Exported handler functions (used by kernel + legacy registration) ──
 
+export async function handleRemember(
+  { owner_id, content, category }: {
+    owner_id: string; content: string; category?: string;
+  },
+) {
+  const { block, isNew } = await getOrCreateHistory(owner_id);
+
+  const timestamp = new Date().toISOString();
+  const entry = category
+    ? `[${category}] ${content} (${timestamp})`
+    : `${content} (${timestamp})`;
+
+  const fl = floorDepth(block);
+
+  if (fl <= 1) {
+    const slot = findNextSlot(block);
+    if (slot) {
+      block[slot] = entry;
+    } else {
+      compactIfFull(block, []);
+      block['1'] = entry;
+    }
+  } else {
+    const slot = findNextSlot(block);
+    if (slot) {
+      block[slot] = entry;
+    } else {
+      compactIfFull(block, []);
+      block['1'] = entry;
+    }
+  }
+
+  await upsertBlock(owner_id, 'history', 'history', block);
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(
+          { remembered: true, slot: 'written', entry_preview: entry.slice(0, 100) },
+          null,
+          2,
+        ),
+      },
+    ],
+  };
+}
+
+export async function handleRecall(
+  { owner_id, level, position, search }: {
+    owner_id: string; level?: number; position?: number; search?: string;
+  },
+) {
+  const row = await getBlock(owner_id, 'history');
+  if (!row) {
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'No history found. Use pscale_remember to start building memory.',
+        },
+      ],
+    };
+  }
+
+  const block = row.block as Block;
+
+  // Search mode: scan entire block for keyword matches
+  if (search) {
+    const matches: { address: string; text: string }[] = [];
+    function searchNode(node: any, path: string) {
+      if (typeof node === 'string') {
+        if (node.toLowerCase().includes(search!.toLowerCase())) {
+          matches.push({ address: path, text: node });
+        }
+        return;
+      }
+      if (node && typeof node === 'object') {
+        const us = collectUnderscore(node);
+        if (us && us.toLowerCase().includes(search!.toLowerCase())) {
+          matches.push({ address: path || '_', text: us });
+        }
+        for (const d of '123456789') {
+          if (d in node) {
+            searchNode(node[d], path ? `${path}.${d}` : d);
+          }
+        }
+      }
+    }
+    searchNode(block, '');
+    const lines = matches.slice(0, 20).map(m => `  [${m.address}] ${m.text}`);
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Search "${search}" — ${matches.length} matches:\n${lines.join('\n')}`,
+        },
+      ],
+    };
+  }
+
+  // Position mode: specific item at this level
+  if (position) {
+    const result = bsp(block, String(position));
+    return {
+      content: [
+        { type: 'text' as const, text: `[history ${position}]\n${fmtResult(result)}` },
+      ],
+    };
+  }
+
+  // All items at this level — use disc
+  const effectiveLevel = level ?? 0;
+  const result = bsp(block, null, effectiveLevel, 'disc');
+
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `[history disc @ depth ${effectiveLevel}]\n${fmtResult(result)}`,
+      },
+    ],
+  };
+}
+
+export async function handleConcern(
+  { owner_id, action, purpose, perception, gap }: {
+    owner_id: string; action: string; purpose?: string; perception?: string; gap?: string;
+  },
+) {
+  if (action === 'read') {
+    const row = await getBlock(owner_id, 'concern');
+    if (!row) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'No concern set. Use pscale_concern with action "set" to define your current focus.',
+          },
+        ],
+      };
+    }
+    const dir = bsp(row.block as Block);
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `[concern]\n${fmtResult(dir)}`,
+        },
+      ],
+    };
+  }
+
+  // action === 'set'
+  const now = new Date().toISOString();
+  const block: Block = {
+    _: `Current concern — last updated ${now}`,
+    '1': `Purpose: ${purpose || '(not set)'}`,
+    '2': `Perception: ${perception || '(not set)'}`,
+    '3': `Gap: ${gap || '(not set)'}`,
+  };
+
+  // If there's an existing concern, save its summary as entry 4
+  const existing = await getBlock(owner_id, 'concern');
+  if (existing) {
+    const prev = existing.block as Block;
+    const prevSummary = collectUnderscore(prev) || '';
+    block['4'] = `Previous: ${prevSummary}`;
+  }
+
+  await upsertBlock(owner_id, 'concern', 'concern', block);
+
+  const dir = bsp(block);
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `Concern set.\n${fmtResult(dir)}`,
+      },
+    ],
+  };
+}
+
+// ── Legacy registration (kept for backward compat) ──
+
+export function registerMemoryOps(server: McpServer) {
   server.tool(
     'pscale_remember',
     `Remember something. Stores it in your history block with automatic pscale compaction — when 9 items accumulate at a level, they compress to a summary at the next level. Your most recent memories are detailed; older ones are progressively summarised. Nothing is deleted. Use for: session events, decisions made, things learned, interactions completed.`,
@@ -108,60 +293,8 @@ export function registerMemoryOps(server: McpServer) {
           "Optional. A short tag like 'decision', 'event', 'learning', 'interaction'. Helps with later recall.",
         ),
     },
-    async ({ owner_id, content, category }) => {
-      const { block, isNew } = await getOrCreateHistory(owner_id);
-
-      // Tag content with category and timestamp
-      const timestamp = new Date().toISOString();
-      const entry = category
-        ? `[${category}] ${content} (${timestamp})`
-        : `${content} (${timestamp})`;
-
-      // Find the current working level — the root for a flat block,
-      // or navigate to the deepest non-full level
-      const fl = floorDepth(block);
-
-      if (fl <= 1) {
-        // Simple case: floor 1 block. Write to next available slot at root.
-        const slot = findNextSlot(block);
-        if (slot) {
-          block[slot] = entry;
-        } else {
-          // Root is full — compact and supernest, then write to slot 1
-          compactIfFull(block, []);
-          block['1'] = entry;
-        }
-      } else {
-        // Living block (floor > 1). Find the current accumulation front.
-        // Walk to the deepest level that has an open slot.
-        // For now, simplified: find the first open slot at the top level.
-        const slot = findNextSlot(block);
-        if (slot) {
-          block[slot] = entry;
-        } else {
-          compactIfFull(block, []);
-          block['1'] = entry;
-        }
-      }
-
-      await upsertBlock(owner_id, 'history', 'history', block);
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify(
-              { remembered: true, slot: 'written', entry_preview: entry.slice(0, 100) },
-              null,
-              2,
-            ),
-          },
-        ],
-      };
-    },
+    handleRemember,
   );
-
-  // ── pscale_recall ──
 
   server.tool(
     'pscale_recall',
@@ -189,80 +322,8 @@ export function registerMemoryOps(server: McpServer) {
           'Optional. A keyword or phrase to search for across the history block.',
         ),
     },
-    async ({ owner_id, level, position, search }) => {
-      const row = await getBlock(owner_id, 'history');
-      if (!row) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: 'No history found. Use pscale_remember to start building memory.',
-            },
-          ],
-        };
-      }
-
-      const block = row.block as Block;
-
-      // Search mode: scan entire block for keyword matches
-      if (search) {
-        const matches: { address: string; text: string }[] = [];
-        function searchNode(node: any, path: string) {
-          if (typeof node === 'string') {
-            if (node.toLowerCase().includes(search!.toLowerCase())) {
-              matches.push({ address: path, text: node });
-            }
-            return;
-          }
-          if (node && typeof node === 'object') {
-            const us = collectUnderscore(node);
-            if (us && us.toLowerCase().includes(search!.toLowerCase())) {
-              matches.push({ address: path || '_', text: us });
-            }
-            for (const d of '123456789') {
-              if (d in node) {
-                searchNode(node[d], path ? `${path}.${d}` : d);
-              }
-            }
-          }
-        }
-        searchNode(block, '');
-        const lines = matches.slice(0, 20).map(m => `  [${m.address}] ${m.text}`);
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Search "${search}" — ${matches.length} matches:\n${lines.join('\n')}`,
-            },
-          ],
-        };
-      }
-
-      // Position mode: specific item at this level
-      if (position) {
-        const result = bsp(block, String(position));
-        return {
-          content: [
-            { type: 'text' as const, text: `[history ${position}]\n${fmtResult(result)}` },
-          ],
-        };
-      }
-
-      // All items at this level — use disc
-      const result = bsp(block, null, level, 'disc');
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: `[history disc @ depth ${level}]\n${fmtResult(result)}`,
-          },
-        ],
-      };
-    },
+    handleRecall,
   );
-
-  // ── pscale_concern ──
 
   server.tool(
     'pscale_concern',
@@ -285,58 +346,6 @@ export function registerMemoryOps(server: McpServer) {
           "For 'set': the difference between purpose and perception",
         ),
     },
-    async ({ owner_id, action, purpose, perception, gap }) => {
-      if (action === 'read') {
-        const row = await getBlock(owner_id, 'concern');
-        if (!row) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: 'No concern set. Use pscale_concern with action "set" to define your current focus.',
-              },
-            ],
-          };
-        }
-        const dir = bsp(row.block as Block);
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `[concern]\n${fmtResult(dir)}`,
-            },
-          ],
-        };
-      }
-
-      // action === 'set'
-      const now = new Date().toISOString();
-      const block: Block = {
-        _: `Current concern — last updated ${now}`,
-        '1': `Purpose: ${purpose || '(not set)'}`,
-        '2': `Perception: ${perception || '(not set)'}`,
-        '3': `Gap: ${gap || '(not set)'}`,
-      };
-
-      // If there's an existing concern, save its summary as entry 4
-      const existing = await getBlock(owner_id, 'concern');
-      if (existing) {
-        const prev = existing.block as Block;
-        const prevSummary = collectUnderscore(prev) || '';
-        block['4'] = `Previous: ${prevSummary}`;
-      }
-
-      await upsertBlock(owner_id, 'concern', 'concern', block);
-
-      const dir = bsp(block);
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: `Concern set.\n${fmtResult(dir)}`,
-          },
-        ],
-      };
-    },
+    handleConcern,
   );
 }
