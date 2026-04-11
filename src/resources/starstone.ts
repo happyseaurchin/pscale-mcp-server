@@ -7,7 +7,7 @@ export function registerStarstone(server: McpServer) {
     'pscale://starstone',
     {
       description:
-        'The pscale self-teaching block. Read this to understand how pscale blocks work. The block teaches navigation by being navigable — walk it with pscale_walk to learn the mechanics.',
+        'The pscale starstone v3 — a complete self-unpacking specification of the pscale block format and BSP navigation. Teaches by being: every spindle through this block delivers both an explanation and a structural demonstration. Covers: format (underscore, digits, nesting), BSP (all 6 modes), implementation spec, hidden directories, star operator, and block sign (plus/minus). Walk it with pscale_walk to learn the mechanics.',
       mimeType: 'application/json',
     },
     async (uri) => ({

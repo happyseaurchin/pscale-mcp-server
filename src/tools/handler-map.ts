@@ -10,6 +10,7 @@ import { handleCreateBlock, handleWrite, handleWalk } from './block-ops.js';
 import { handleRemember, handleRecall, handleConcern } from './memory-ops.js';
 import { handlePassportPublish, handlePassportRead } from './identity-ops.js';
 import { handleBeachMark, handleBeachRead, handleInboxSend, handleInboxCheck } from './discovery-ops.js';
+import { handleInvite } from './invite-ops.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ToolHandler = (args: any) => Promise<any>;
@@ -27,6 +28,7 @@ export const HANDLER_MAP: Record<string, ToolHandler> = {
   pscale_beach_read: handleBeachRead,
   pscale_inbox_send: handleInboxSend,
   pscale_inbox_check: handleInboxCheck,
+  pscale_invite: handleInvite,
 };
 
 /**

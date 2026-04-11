@@ -3,6 +3,7 @@ import { registerBlockOps } from './tools/block-ops.js';
 import { registerMemoryOps } from './tools/memory-ops.js';
 import { registerIdentityOps } from './tools/identity-ops.js';
 import { registerDiscoveryOps } from './tools/discovery-ops.js';
+import { registerInviteOps } from './tools/invite-ops.js';
 import { registerStarstone } from './resources/starstone.js';
 
 export function createServer(): McpServer {
@@ -21,6 +22,7 @@ export function createServer(): McpServer {
   registerMemoryOps(server);
   registerIdentityOps(server);
   registerDiscoveryOps(server);
+  registerInviteOps(server);
   registerStarstone(server);
 
   return server;
