@@ -26,13 +26,59 @@ This project bridges two worlds: the pscale world where structure IS the program
 
 ---
 
+## TWO TRACKS — READ THIS FIRST
+
+This repo contains two parallel, independent systems sharing the same handler code. They are NOT branches of each other. They do NOT merge. If you are working on one track, do NOT touch the other.
+
+### Track A — Traditional MCP (production)
+
+The hardcoded MCP server. Tool registrations in TypeScript. This is the production system. The tiered roadmap (recall, compaction, Tier 1 tools, etc.) happens here.
+
+- **Entry point**: `src/index.ts` → `src/server.ts`
+- **Deployment**: Railway auto-deploys from main
+- **URL**: `https://pscale-mcp-server-production.up.railway.app/mcp`
+- **DO NOT modify `src/index.ts` or `src/server.ts` for reef purposes**
+
+### Track B — Reef Kernel (experimental)
+
+The reef-driven server. Tool definitions come from `mcp-reef.json`, a pscale block. A thin kernel reads the reef and registers tools dynamically. This is the experimental path — self-describing, forkable server definitions.
+
+- **Entry point**: `src/index-reef.ts` → `src/kernel.ts`
+- **Deployment**: Separate Railway service, same repo, different start command
+- **URL**: `https://reef.hermitcrab.me` (reef at `/reef`, MCP at `/mcp`)
+- **DO NOT modify Track A files for reef purposes. DO NOT modify `src/index.ts`.**
+
+### Shared code (both tracks use)
+
+- `src/bsp.ts` — BSP walker (DO NOT MODIFY, reference copy)
+- `src/db.ts` — Supabase client
+- `src/tools/block-ops.ts` — handler functions (exported as named functions)
+- `src/tools/memory-ops.ts` — handler functions
+- `src/tools/identity-ops.ts` — handler functions
+- `src/tools/discovery-ops.ts` — handler functions
+- `src/resources/starstone.ts` — starstone resource
+
+### Track B only
+
+- `mcp-reef.json` — the reef (source of truth for Track B)
+- `src/kernel.ts` — reads reef, converts schemas, registers tools
+- `src/schema-converter.ts` — reef pscale schema → Zod
+- `src/tools/handler-map.ts` — dispatch map + adapters
+- `src/index-reef.ts` — Track B HTTP entry point
+
+When modifying shared handler code (src/tools/*.ts), keep the exported handler functions compatible with both tracks. The `registerX()` functions in each file are Track A's registration path. The kernel uses the exported handler functions directly.
+
+---
+
 ## What this is
 
 An MCP server giving any LLM agent structured memory and cooperative discovery via pscale blocks. 12 tools + 1 resource. Streamable HTTP transport. Supabase storage.
 
 **Repo**: https://github.com/pscale-commons/pscale-mcp-server
-**Live**: https://pscale-mcp-server-production.up.railway.app/mcp
-**Connect**: Add to any MCP client config:
+**Track A (production)**: `https://pscale-mcp-server-production.up.railway.app/mcp`
+**Track B (reef)**: `https://reef.hermitcrab.me` — reef at `/reef`, MCP at `/mcp`
+
+Track A connect config:
 ```json
 {
   "pscale": {
@@ -48,26 +94,33 @@ An MCP server giving any LLM agent structured memory and cooperative discovery v
 src/
   bsp.ts              — BSP walker (bsp2-star port, DO NOT MODIFY)
   db.ts               — Supabase client (thin wrapper, exports getClient)
-  server.ts           — MCP server factory, registers all tool groups
-  index.ts            — Standalone Node.js HTTP entry (persistent sessions)
+  server.ts           — Track A: MCP server factory, hardcoded tool registration
+  kernel.ts           — Track B: reads mcp-reef.json, registers tools dynamically
+  schema-converter.ts — Track B: reef pscale schema → Zod
+  index.ts            — Track A entry point (DO NOT MODIFY for reef work)
+  index-reef.ts       — Track B entry point (GET /reef + POST /mcp)
   starstone.json      — Lean starstone block (MCP resource)
   starstone-full.json — Full starstone (reference)
   tools/
-    block-ops.ts      — create_block, write, walk
+    block-ops.ts      — create_block, write, walk (handlers shared by both tracks)
     memory-ops.ts     — remember, recall, concern
     identity-ops.ts   — passport_publish, passport_read
     discovery-ops.ts  — beach_mark, beach_read, inbox_send, inbox_check
+    handler-map.ts    — Track B: dispatch map + adapters
   resources/
     starstone.ts      — Serves starstone as MCP resource
 api/
-  mcp.ts              — Vercel serverless entry (works for init, unreliable for sessions)
+  mcp.ts              — Vercel serverless entry (broken for sessions, left as reference)
+mcp-reef.json         — Track B: the reef block (server definition as pscale data)
 ```
 
 ## Deployment
 
-- **Railway** (production): `https://pscale-mcp-server-production.up.railway.app/mcp` — persistent Node.js process, real sessions, auto-deploys from main. This is what agents connect to.
-- **Vercel** (broken for sessions): `api/mcp.ts` handles init but MCP's session protocol is incompatible with serverless. Init works, follow-up tool calls fail because each Vercel invocation is stateless. Left in the repo but not the recommended deployment.
-- **Standalone**: `SUPABASE_ANON_KEY=... npx tsx src/index.ts` — for local development.
+- **Track A — Railway** (production): `https://pscale-mcp-server-production.up.railway.app/mcp` — entry point `src/index.ts`. Persistent Node.js process, real sessions, auto-deploys from main. This is what agents connect to.
+- **Track B — Railway** (reef): `https://reef.hermitcrab.me` — entry point `src/index-reef.ts`. Separate Railway service, same repo. Start command: `npx tsx src/index-reef.ts`.
+- **Vercel** (broken for sessions): `api/mcp.ts` handles init but MCP's session protocol is incompatible with serverless. Left in the repo but not the recommended deployment.
+- **Standalone Track A**: `SUPABASE_ANON_KEY=... npx tsx src/index.ts`
+- **Standalone Track B**: `SUPABASE_ANON_KEY=... npx tsx src/index-reef.ts`
 
 ## BSP walker
 
