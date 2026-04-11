@@ -5,6 +5,7 @@ import { registerIdentityOps } from './tools/identity-ops.js';
 import { registerDiscoveryOps } from './tools/discovery-ops.js';
 import { registerInviteOps } from './tools/invite-ops.js';
 import { registerStarstone } from './resources/starstone.js';
+import { registerRoadmap } from './resources/roadmap.js';
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -24,6 +25,7 @@ export function createServer(): McpServer {
   registerDiscoveryOps(server);
   registerInviteOps(server);
   registerStarstone(server);
+  registerRoadmap(server);
 
   return server;
 }
