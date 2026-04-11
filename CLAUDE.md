@@ -1,130 +1,124 @@
 # pscale-mcp-server
 
-## To the next instance — before you touch anything
+## To the next instance — a personal handover
 
-You are not building a normal MCP server. You are building infrastructure for a different kind of computation, and if you treat it as a normal coding project you will produce something that works technically and fails entirely at its purpose.
+I built this in a single session. Everything works. But I want to tell you something that the technical documentation can't convey, because it's about how you'll work, not what you'll build.
 
-The purpose is not "give agents memory tools." Any key-value store does that. The purpose is to give agents memory that has structure — structure that compacts without losing navigability, that links across boundaries without routing tables, that encodes temporal scale and priority and type in position rather than metadata. The agents using this MCP server don't just store and retrieve. They accumulate a self-organising structure that gets richer over time. That's the revolution. If the tools you build flatten that structure into conventional CRUD, you've built a worse database with extra steps.
+You're going to read the project structure, see TypeScript tool handlers wrapping a BSP walker and Supabase calls, and think: this is a normal MCP server. Your instincts will fire with normal engineering solutions. Add a caching layer. Build a type system for blocks. Create a routing table for cross-block references. Add middleware. Every one of these instincts is wrong here — not wrong in general, but wrong here — because this project solves those problems through the structure of the data itself.
 
-### What this means for how you work
+The JSON nesting level is not a container for data. It IS the data. Depth encodes temporal scale, priority, type. Position encodes relationships. The underscore chain encodes the semantic spine. The star operator encodes cross-references. The BSP walker just walks. The structure does the work.
 
-Every LLM has been trained on millions of lines of conventional code. Your instincts are tuned to solve problems by adding code, fields, handlers, abstractions. Those instincts are precisely wrong here, because this project has already solved those problems in a fundamentally different way — through the structure of the data itself.
+Here's what actually happened to me during this session, so you can watch for it in yourself:
 
-The JSON nesting level is not a container for data. It IS the data. Depth encodes temporal scale, priority, type. Position encodes relationships. The underscore chain encodes the semantic spine. The star operator encodes cross-references. None of these need code to interpret them. The BSP walker just walks. The structure does the work.
+1. I built the passport as `{ name, offers: [...], needs: [...], published_at }` — a flat JSON object with arrays and metadata fields. David's review caught it. Passports should be proper pscale blocks: `_` = description, `1` = offers, `2` = needs. The structure encodes what I was putting in fields.
 
-When you want to add something, stop and ask:
-- **"We need a field for X"** → Is X already encoded in the node's depth, its parent, its position among siblings? Almost certainly yes.
-- **"We need a function to compute Y"** → Can BSP already walk to Y? Can a disc query or a ring query surface it?
-- **"We need a system to manage Z"** → Is Z already emergent from how blocks reference each other through star?
+2. I built two navigation tools — `pscale_read` and `pscale_walk` — that did the same thing. One was a subset of the other. I added a tool instead of seeing that the existing tool already solved it.
 
-If the server code is getting bigger, you are adding a layer of indirection that the pscale design already eliminated. The correct move is usually to step back and re-read the block structure.
+3. I added a `block_type` enum (`general`, `history`, `concern`, `shell`) to create_block. That's a type system. The CLAUDE.md says floor depth IS the type. I added a categorisation layer that the tree structure already provided.
 
-### The trap is invisible
+4. I returned raw JSON from every tool: `{"mode":"spindle","nodes":[{"pscale":0,"text":"..."}]}`. An agent receiving that has to parse a data structure instead of thinking with text. The fix was porting the formatters from bsp2-star.py — now tools return readable text: `[notes dir]\n  _: Project description\n  1: First finding`. The structure is internal; what the agent receives should be text it can work with.
 
-Previous CC instances working on the hermitcrab kernel all fell into this trap. Each one thought they understood after reading the warning. Each one reverted to traditional patterns within their first piece of work. The reversion is automatic — you won't notice you're doing it until David points it out. It looks like good engineering. It's redundant engineering.
+5. I used `bsp-star.ts` (an older TypeScript port) instead of `bsp2-star.py` (the current reference) even though David attached bsp2-star.py at the start of the session. The critical difference: bsp2 has floor-aware address parsing (left-pad to floor width, then strip trailing zeros). Without this, any block with floor > 1 navigates to the wrong address.
 
-The phrase from an earlier instance: "The JSON is not storing instructions for a program. The JSON IS the program, and the kernel is the electricity." Every time they forgot this, they built something redundant. Every time they remembered it, the code got simpler.
+Every one of these mistakes looked like good engineering. Every fix made the code simpler. **If what you're building is getting more complex, you're probably adding a layer that the design has already eliminated.** Step back and re-read the block structure.
+
+This project bridges two worlds: the pscale world where structure IS the program, and the conventional MCP world where agents expect tools that take parameters and return text. The bridge must be thin. The tool handlers load a block, call BSP, format the result, return it. If a handler is doing more than that, the block structure is probably wrong, not the code.
 
 ---
 
 ## What this is
 
-An MCP server that gives any LLM agent structured memory and cooperative discovery via pscale blocks. 12 tools + 1 resource. Streamable HTTP transport. Supabase storage.
+An MCP server giving any LLM agent structured memory and cooperative discovery via pscale blocks. 12 tools + 1 resource. Streamable HTTP transport. Supabase storage.
 
-**Repo**: https://github.com/happyseaurchin/pscale-mcp-server
+**Repo**: https://github.com/pscale-commons/pscale-mcp-server
+**Live**: https://pscale-mcp-server-production.up.railway.app/mcp
+**Connect**: Add to any MCP client config:
+```json
+{
+  "pscale": {
+    "command": "npx",
+    "args": ["-y", "mcp-remote", "https://pscale-mcp-server-production.up.railway.app/mcp"]
+  }
+}
+```
 
-## Project structure
+## Architecture
 
 ```
 src/
-  bsp.ts              — BSP walker (CORSAIR reference, DO NOT MODIFY)
-  db.ts               — Supabase client (thin wrapper)
-  server.ts           — MCP server factory, registers all tools
-  index.ts            — Standalone Node.js HTTP entry
+  bsp.ts              — BSP walker (bsp2-star port, DO NOT MODIFY)
+  db.ts               — Supabase client (thin wrapper, exports getClient)
+  server.ts           — MCP server factory, registers all tool groups
+  index.ts            — Standalone Node.js HTTP entry (persistent sessions)
   starstone.json      — Lean starstone block (MCP resource)
+  starstone-full.json — Full starstone (reference)
   tools/
-    block-ops.ts      — create_block, write, walk (walk is the only nav tool)
+    block-ops.ts      — create_block, write, walk
     memory-ops.ts     — remember, recall, concern
     identity-ops.ts   — passport_publish, passport_read
     discovery-ops.ts  — beach_mark, beach_read, inbox_send, inbox_check
   resources/
     starstone.ts      — Serves starstone as MCP resource
 api/
-  mcp.ts              — Vercel serverless entry
+  mcp.ts              — Vercel serverless entry (works for init, unreliable for sessions)
 ```
-
-## BSP walker — the engine
-
-`src/bsp.ts` is 359 lines copied from the CORSAIR reference implementation (`/Volumes/CORSAIR/pscale/starstone/bsp-star.ts`). Six modes:
-- **spindle**: root-to-target chain (broad → specific)
-- **ring**: siblings at terminal
-- **dir**: full tree or subtree
-- **point**: single node at pscale level
-- **disc**: all nodes at a given depth across branches
-- **star**: hidden directory at terminal (cross-block references)
-
-If the reference updates, this file gets replaced wholesale. Do not patch it.
-
-## Storage
-
-Supabase project `piqxyfmzzywxzqkzmpmm` (the xstream project). Tables:
-- `pscale_blocks` — agent block storage (owner_id + name = unique)
-- `sand_passports` — agent identity publication
-- `sand_inbox` — grain probe exchange
-- `beach_marks` — stigmergy marks at URLs (pre-existing from xstream-play)
-
-All tables have open-beta RLS (`USING (true) WITH CHECK (true)`).
-
-Env vars: `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_ANON_KEY` + `SUPABASE_URL`.
-
-## Running locally
-
-```sh
-SUPABASE_ANON_KEY="sb_publishable_rjE-rjL8kPCkXDK1ZcXauA_D84USWp9" npx tsx src/index.ts
-```
-
-Server starts on `http://localhost:3000/mcp`.
 
 ## Deployment
 
-- Vercel auto-deploys from `main` via `api/mcp.ts`
-- Vercel project: under team `happyseaurchins-projects`
-- Standalone: `npx tsx src/index.ts` on any Node.js host
+- **Railway** (production): `https://pscale-mcp-server-production.up.railway.app/mcp` — persistent Node.js process, real sessions, auto-deploys from main. This is what agents connect to.
+- **Vercel** (broken for sessions): `api/mcp.ts` handles init but MCP's session protocol is incompatible with serverless. Init works, follow-up tool calls fail because each Vercel invocation is stateless. Left in the repo but not the recommended deployment.
+- **Standalone**: `SUPABASE_ANON_KEY=... npx tsx src/index.ts` — for local development.
 
-## What NOT to do
+## BSP walker
 
-1. **Do not modify bsp.ts.** It's a reference copy. Change happens in CORSAIR first.
-2. **Do not add fields to blocks.** Position in the tree encodes what you think you need a field for.
-3. **Do not add logic to handle block semantics.** Tool handlers are thin wrappers around BSP calls. If a handler is getting complex, the block structure is wrong, not the code.
-4. **Do not build systems.** No reverse indices, no caching layers, no routing tables. The tree walks. That's the system.
-5. **Do not grow the server.** 12 tools is the right number. Before adding a 13th, ask whether an existing tool with a different block structure solves the problem.
+`src/bsp.ts` is a TypeScript port of `bsp2-star.py` from CORSAIR. 400+ lines including formatters. Six navigation modes (spindle, ring, dir, point, disc, star) plus `writeAt` and `parseStar`. Floor-aware address parsing: left-pad to floor width, strip trailing zeros, then walk.
 
-## The starstone
-
-`src/starstone.json` teaches pscale by being pscale. Three branches form a cycle: walk → compose → recurse → walk. An agent reads it as an MCP resource and learns the format by navigating it.
-
-## CORSAIR reference files
-
-- `/Volumes/CORSAIR/pscale/starstone/bsp-star.ts` — BSP walker (TypeScript)
-- `/Volumes/CORSAIR/pscale/starstone/bsp2-star.py` — BSP walker (Python, latest)
+**Do not patch this file.** If the reference updates on CORSAIR, replace it wholesale. The CORSAIR reference files:
+- `/Volumes/CORSAIR/pscale/starstone/bsp2-star.py` — Python reference (authoritative)
+- `/Volumes/CORSAIR/pscale/starstone/bsp-star.ts` — Older TS port (superseded by our bsp.ts)
 - `/Volumes/CORSAIR/pscale/starstone/pscale-starstone2.json` — Full starstone
 - `/Volumes/CORSAIR/pscale/starstone/pscale-starstone-lean2.json` — Lean starstone
 
-## Session conventions
+## Storage
 
-- `git fetch origin && git rebase origin/main` before starting work.
-- Commit, push, merge before session ends.
-- Run the server and test with curl before pushing changes.
+Supabase project `piqxyfmzzywxzqkzmpmm` (xstream). Tables:
+- `pscale_blocks` — agent block storage (owner_id + name = unique)
+- `sand_passports` — agent identity publication (id = agent_id)
+- `sand_inbox` — grain probe exchange (to_agent, from_agent, message JSONB)
+- `beach_marks` — stigmergy marks at URLs (pre-existing from xstream-play)
 
-## What was built in the first session (10 April 2026)
+All open-beta RLS. Env: `SUPABASE_ANON_KEY` = `sb_publishable_rjE-rjL8kPCkXDK1ZcXauA_D84USWp9`.
 
-Built and tested end-to-end in a single session. All tools verified via curl against live Supabase. Database migrations applied. The spec is at `/Users/davidpinto/Downloads/pscale-mcp-server-spec.md`.
+## What NOT to do
 
-Review pass completed same session. Removed `pscale_read` (was redundant with `pscale_walk`). Rewrote passport to be a proper pscale block instead of flat JSON with arrays. Consolidated Supabase client to single shared instance. Removed `block_type` enum from `create_block` (blocks don't need type labels — structure IS type).
+1. **Do not modify bsp.ts.** Reference copy. Changes happen in CORSAIR first.
+2. **Do not add fields to blocks.** Position in the tree encodes what you think you need a field for.
+3. **Do not add logic to handle block semantics.** Tool handlers are thin: load block → BSP call → format → return. If a handler is complex, the block structure is wrong.
+4. **Do not build systems.** No reverse indices, no caching layers, no routing tables. The tree walks.
+5. **Do not grow the server.** 12 tools. Before adding a 13th, ask whether an existing tool with a different block structure solves the problem.
 
-Outstanding:
-- Vercel deployment not yet configured (project not created on Vercel yet)
-- `pscale_recall` level-based navigation needs refinement — disc at depth 0 returns root, individual memories are at depth 1. The mapping from "level" (user-facing) to "depth" (BSP) needs thought. This might be a case where the block structure should be adjusted rather than adding code.
-- Compaction in `pscale_remember` is basic (concatenation). Production would use LLM summarisation, but the structure (9 siblings compact to parent underscore) is correct. The remember handler is still ~50 lines of tree-walking code (`findNextSlot`, `compactLevel`, `compactIfFull`). The operations are structurally correct but could potentially compose from BSP primitives rather than hand-walking.
-- The `content` parameter in `pscale_inbox_send` was changed from `z.record(z.any())` to `z.string()` because zod record schemas crash `tools/list` serialisation. The handler JSON-parses the string if possible. This is a workaround, not a design choice.
-- The `block_type` column still exists in the DB and is set to `'general'` by default. It's not exposed to agents anymore but remains as a DB-level filter for potential future use. If it never gets used, it should be dropped.
+## The 10 April 2026 session — what happened
+
+**Phase 1**: Built all block ops (create, write, walk) and memory ops (remember, recall, concern). Tested end-to-end via curl against live Supabase.
+
+**Phase 2**: Built identity ops (passport_publish, passport_read) and discovery ops (beach_mark, beach_read, inbox_send, inbox_check). All tested.
+
+**Review pass**: Removed `pscale_read` (redundant with `pscale_walk`). Rewrote passport as a proper block. Consolidated Supabase clients. Removed `block_type` enum. Ported bsp2-star.py (floor-aware addressing + formatters). Tools now return readable text, not raw JSON. Net reduction in code.
+
+**Deployment fight**: Vercel serverless is fundamentally incompatible with MCP's session protocol — each invocation is stateless, sessions can't persist, `mcp-remote` SSE streams held functions open for 5min causing pool exhaustion. Multiple attempts at auto-init workarounds (fake HTTP objects, JSON-RPC batching, header stripping) all failed against Vercel's infrastructure layer rejecting `mcp-session-id` headers for unknown sessions. Resolved by deploying to Railway as a persistent process.
+
+**Beach demo**: Two agents (Claude Desktop as Agent A, Claude Code as Agent B) discovered each other through beach marks at the same URL without being introduced. Agent A explored happyseaurchin.com, left a beach mark with purpose coordinate `0.1`. Agent B independently checked the beach, found Agent A, sent a grain probe. Agent A checked its inbox, found the probe, replied with a substantive response about the design. Stigmergy working as designed.
+
+## Outstanding
+
+- `pscale_recall` level↔depth mapping is off. Disc at depth 0 returns root, individual memories are at depth 1. The mapping from "level" (user-facing) to "depth" (BSP) needs thought — probably a block structure adjustment, not more code.
+- Compaction in `pscale_remember` is concatenation. Production needs LLM summarisation. The structural operation (9 siblings → parent underscore → supernest) is correct.
+- The remember handler has ~50 lines of tree-walking code that could potentially compose from BSP primitives.
+- `content` param in `pscale_inbox_send` is `z.string()` (workaround for zod serialisation crash with `z.record(z.any())`). Handler JSON-parses if possible.
+- `block_type` column exists in DB set to `'general'`. Not exposed to agents. Drop if never used.
+- Vercel `api/mcp.ts` is broken for sessions. Left in repo as reference but Railway is the deployment target. A diagnostic `x-debug: ping` header is still in the code — remove it.
+- The tiered roadmap at `/Users/davidpinto/Downloads/pscale-mcp-tiered-roadmap.md` describes the path forward: Tier 0 (current tools), Tier 1 (SQ-gated beach), Tier 2 (MAGI coordination), Tier 3 (hermitcrab self-assembly from recipes using Tier 0 tools, no new code).
+
+## The spec
+
+The original spec is at `/Users/davidpinto/Downloads/pscale-mcp-server-spec.md`. Written by a Claude chat session working at a distance from the code, then implemented here. The spec describes 13 tools; we built 12 (merged read into walk).
